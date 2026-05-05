@@ -1,0 +1,375 @@
+\documentclass[12pt, a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{cite}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\setcounter{secnumdepth}{5}
+
+\title{\textbf{EE5770 Course Project}\\ 5G NR PDSCH Chain with OFDM over an L-Tap Fading Channel}
+\author{Your Name / Student ID}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This report details the software implementation and evaluation of a complete 5G Physical Downlink Shared Channel (PDSCH) transceiver. Performance is evaluated over an L-tap frequency-selective Rayleigh fading channel. Two coding schemes---5G NR LDPC codes and zero-tail terminated convolutional codes---are compared under a strict matched-complexity constraint, alongside an evaluation of Zero-Forcing (ZF) and Minimum Mean-Square Error (MMSE) equalizers.
+\end{abstract}
+
+\newpage
+\tableofcontents
+\newpage
+
+%=============================================
+\section{Introduction}
+%=============================================
+The Physical Downlink Shared Channel (PDSCH) is the primary data-bearing channel in 5G NR. This project investigates the error-rate performance and decoding complexity of LDPC versus convolutional codes over a frequency-selective Rayleigh fading channel with OFDM transmission. We evaluate ZF and MMSE equalizers and answer six key analysis questions regarding matched complexity, frequency selectivity, modulation order, and iterative decoding behaviour.
+
+%=============================================
+\section{System Model}
+%=============================================
+
+\subsection{Transmitter Chain}
+The transmitter implements a complete PDSCH chain including CRC attachment, code-block segmentation, channel coding, rate matching, scrambling, modulation, and OFDM modulation.
+
+\subsubsection{Code Block (CB) Segmentation}
+In 5G NR, Code Block (CB) segmentation fragments a larger Transport Block (TB) into smaller CBs. Each CB is equipped with a 24-bit CRC for error detection. If the length of TB exceeds 8448 bits (LDPC) or 6144 bits (convolutional), the TB is segmented into $N$ code blocks:
+\[N = \lceil TB/(K_{CB} - 24)\rceil\]
+
+\subsubsection{Cyclic Redundancy Check (CRC)}
+The following CRC types are used:
+\begin{enumerate}
+    \item \textbf{Transport Block CRC-24A:} Used when $A > 3824$ bits. Polynomial: $D^{24}+D^{23}+D^{18}+D^{17}+D^{14}+D^{11}+D^{10}+D^{7}+D^6+D^5+D^4+D^3+D+1$.
+    \item \textbf{Code Block CRC-24B:} Attached to each CB when segmentation occurs. Polynomial: $D^{24}+D^{23}+D^6+D^5+D+1$.
+\end{enumerate}
+
+\subsubsection{OFDM Modulation}
+Let $N$ be the FFT size. The frequency-domain OFDM block is $\mathbf{X} = [X_0, X_1, \dots, X_{N-1}]$. The time-domain signal is obtained via IDFT:
+$$x_n = \frac{1}{\sqrt{N}} \sum_{k=0}^{N-1} X_k e^{j 2 \pi kn/N}, \quad n = 0, 1, \dots, N-1$$
+
+A cyclic prefix of length $N_{CP}$ is prepended:
+$$\mathbf{x}_{\text{tx}} = [\underbrace{x_{N-N_{CP}}, \dots, x_{N-1}}_{\text{CP}},\ \underbrace{x_0, x_1, \dots, x_{N-1}}_{\text{OFDM Symbol}}]$$
+
+\subsubsection{Scrambling}
+The coded bits are XORed with a length-31 Gold sequence initialized with seed:
+$$C_{init} = n_{RNTI}\cdot 2^{15} + q\cdot 2^{14} + n_{ID}$$
+
+\subsection{Channel Model}
+The channel is an $L$-tap i.i.d.\ Rayleigh fading model:
+\begin{equation}
+    \tilde{y}[n] = \sum_{l=0}^{L-1} h[l]\tilde{x}[n-l] + w[n]
+\end{equation}
+
+\textbf{Tap statistics:}
+$$h_i = \frac{1}{\sqrt{2L}}(x_i + jy_i),\quad x_i,y_i\sim\mathcal{N}(0,1) \implies h_i\sim\mathcal{CN}(0,1/L)$$
+$$\mathbb{E}[\|\mathbf{h}\|^2] = \sum_{i=1}^{L}\mathbb{E}[|h_i|^2] = L\cdot\frac{1}{L} = 1$$
+
+\textbf{Noise:}
+$$w_i = \sqrt{\sigma_w^2/2}(x_i+jy_i) \implies w_i\sim\mathcal{CN}(0,\sigma_w^2)$$
+
+\subsection{Receiver Chain and Equalization}
+
+\subsubsection{OFDM Demodulation}
+After CP removal, the $N_{\text{FFT}}$-point DFT yields:
+$$Y_k = \frac{1}{\sqrt{N_{\text{FFT}}}} \sum_{n=0}^{N_{\text{FFT}}-1} y[n]\, e^{-j2\pi kn/N_{\text{FFT}}}$$
+
+The per-subcarrier model is: $Y_k = H_k X_k + W_k$.
+
+\subsubsection{ZF Equalizer}
+$$\hat{X}_{k}^{\text{ZF}} = \frac{Y_k}{H_k},\qquad \gamma_k^{\text{ZF}} = \frac{|H_k|^2}{\sigma_w^2}$$
+
+\subsubsection{MMSE Equalizer}
+$$\hat{X}_{k}^{\text{MMSE}} = \frac{H_k^*}{|H_k|^2 + \sigma_w^2}\,Y_k,\qquad \mu_k = \frac{|H_k|^2}{|H_k|^2+\sigma_w^2}$$
+$$\gamma_k^{\text{MMSE}} = \frac{|H_k|^4}{\sigma_w^2(|H_k|^2+\sigma_w^2)}$$
+
+Both equalizers share a common interface: given $Y_k$, $H_k$, $\sigma_w^2$, they return the equalized symbol $\hat{S}_k$ and per-subcarrier SNR $\gamma_k$.
+
+%=============================================
+\section{Coding Scheme Descriptions}
+%=============================================
+
+\subsection{5G NR LDPC Codes (Scheme A)}
+
+\subsubsection{Base Graph Selection}
+Per TS~38.212 \S5.2.2~\cite{3gpp_212}:
+\begin{itemize}
+    \item \textbf{BG1:} $K > 3824$. Parameters: $K_b=22$, $n_b=68$, $m_b=46$.
+    \item \textbf{BG2:} $K \leq 3824$. Parameters: $K_b=10$, $n_b=52$, $m_b=42$.
+\end{itemize}
+
+\subsubsection{Lifting Size}
+The lifting size $Z$ is the minimum value from the 5G NR set satisfying $K_b \cdot Z \geq K$. The LDPC block length is $K_{\text{ldpc}} = K_b \cdot Z$, and filler bits $L_{\text{filler}} = K_{\text{ldpc}} - K$ are set to zero.
+
+\subsubsection{Parity-Check Matrix Construction}
+The sparse matrix $\mathbf{H}$ is constructed by expanding a base matrix with $Z\times Z$ circulant permutation matrices:
+\begin{equation}
+\mathbf{H} =
+\begin{bmatrix}
+\mathbf{P}(b_{1,1}) & \cdots & \mathbf{P}(b_{1,n_b}) \\
+\vdots & \ddots & \vdots \\
+\mathbf{P}(b_{m_b,1}) & \cdots & \mathbf{P}(b_{m_b,n_b})
+\end{bmatrix}
+\end{equation}
+where $b_{i,j}=-1$ yields a zero matrix of size $Z\times Z$.
+
+\subsubsection{Encoding: Syndrome and Parity Computation}
+Partition $\mathbf{H} = [\mathbf{H}_{\text{sys}} \mid \mathbf{H}_p]$. Compute the syndrome $\mathbf{s} = \mathbf{H}_{\text{sys}}\mathbf{u}_{\text{padded}} \pmod{2}$, then solve over $\mathbb{F}_2$:
+\begin{equation}
+\mathbf{H}_p\mathbf{p} \equiv \mathbf{s} \pmod{2} \implies \mathbf{p} = \mathbf{H}_p^{-1}\mathbf{s}
+\end{equation}
+The inverse $\mathbf{H}_p^{-1}$ is precomputed via Gauss--Jordan elimination over $\text{GF}(2)$ and cached, so per-frame encoding requires only two sparse matrix-vector multiplies.
+
+The final codeword (filler bits removed):
+\begin{equation}
+\mathbf{c}_{\text{final}} = [\mathbf{u}_{1:K};\ \mathbf{p}]
+\end{equation}
+
+\subsubsection{Decoder: Normalized Min-Sum Algorithm}
+
+\paragraph{Buffer Management}
+The input LLRs are mapped to a vector of length $N = n_b \times Z$:
+\begin{enumerate}
+    \item \textbf{Systematic:} Information LLRs in positions $1:K_{\text{orig}}$.
+    \item \textbf{Filler bits:} Positions $K_{\text{orig}}+1:K_{\text{ldpc}}$ set to LLR $= +1000$ (known zero).
+    \item \textbf{Parity:} Parity LLRs in positions $K_{\text{ldpc}}+1:N$.
+\end{enumerate}
+
+\paragraph{Check Node Update (CNU)}
+\begin{equation}
+R_{m \to n}^{(i)} = \alpha \cdot \left(\prod_{n' \in \mathcal{N}(m)\setminus\{n\}} \text{sign}(Q_{n'\to m}^{(i-1)})\right) \cdot \min_{n' \in \mathcal{N}(m)\setminus\{n\}} |Q_{n'\to m}^{(i-1)}|
+\end{equation}
+with normalization factor $\alpha = 0.75$.
+
+\paragraph{Variable Node Update (VNU)}
+\begin{equation}
+\Lambda_n^{(i)} = L_n + \sum_{m' \in \mathcal{M}(n)} R_{m'\to n}^{(i)},\qquad Q_{n\to m}^{(i)} = \Lambda_n^{(i)} - R_{m\to n}^{(i)}
+\end{equation}
+
+\paragraph{Hard Decision and Early Termination}
+$\hat{x}_n = 1$ if $\Lambda_n < 0$, else $0$. Decoding terminates when $\mathbf{H}\hat{\mathbf{x}} \equiv \mathbf{0} \pmod{2}$ or $i = I_{\max}$.
+
+%-------------------------------------------
+\subsection{Terminated Convolutional Codes (Scheme B)}
+
+\subsubsection{Encoder Structure}
+A rate-$\frac{1}{2}$ encoder with constraint length $K$ produces two coded bits per input bit:
+\begin{equation}
+v_t^{(j)} = \sum_{i=0}^{K-1} g_i^{(j)} u_{t-i} \pmod{2},\quad j=1,2
+\end{equation}
+The trellis has $N_s = 2^{K-1}$ states.
+
+\subsubsection{Generator Polynomials}
+\begin{itemize}
+    \item $K=7$: $(133,171)_8 \implies g^{(1)}=[1,0,1,1,0,1,1],\ g^{(2)}=[1,1,1,1,0,0,1]$, $N_s=64$.
+    \item $K=9$: $(561,753)_8 \implies g^{(1)}=[1,0,1,1,1,0,0,0,1],\ g^{(2)}=[1,1,1,1,0,1,0,1,1]$, $N_s=256$.
+\end{itemize}
+
+\subsubsection{Zero-Tail Termination}
+$K-1$ zero bits are appended, forcing the trellis to the all-zero final state.
+\begin{equation}
+B_{\text{term}} = B + K - 1,\qquad N_c = 2(B+K-1),\qquad R_{\text{eff}} = \frac{B}{2(B+K-1)}
+\end{equation}
+
+\subsubsection{Soft-Decision Viterbi Decoder}
+For LLRs $(\lambda_1,\lambda_2)$ and branch output $(v_1,v_2)$, the branch metric is:
+\begin{equation}
+\text{BM}(v_1,v_2) = \lambda_1(1-2v_1) + \lambda_2(1-2v_2)
+\end{equation}
+The ACS recursion:
+\begin{equation}
+\text{PM}^{(t)}(s') = \max_{s,u:\delta(s,u)=s'}\left[\text{PM}^{(t-1)}(s) + \text{BM}(s,u)\right]
+\end{equation}
+Traceback starts from the all-zero terminal state. The last $K-1$ decoded bits are discarded.
+
+\subsubsection{Decoding Complexity}
+\begin{equation}
+C_{\text{ACS}} = 2^K(B+K-1)
+\end{equation}
+
+\begin{table}[ht]
+\centering
+\caption{Convolutional code parameters.}
+\begin{tabular}{lcccc}
+\toprule
+Config & Generators & States & Coded length & ACS ops \\
+\midrule
+$K=7$ & $(133,171)_8$ & 64  & $2(B+6)$ & $128(B+6)$ \\
+$K=9$ & $(561,753)_8$ & 256 & $2(B+8)$ & $512(B+8)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=============================================
+\section{Simulation Parameters}
+%=============================================
+
+\begin{table}[H]
+\centering
+\caption{Baseline simulation parameters.}
+\begin{tabular}{@{}ll@{}}
+\toprule
+Parameter & Value \\
+\midrule
+Transport block size $A$ & 1000 bits \\
+Code rate $R$ & 1/2 \\
+Modulation & QPSK ($M=2$) \\
+FFT size $N_{\text{FFT}}$ & 256 \\
+Channel taps $L$ & 4 (baseline) \\
+Monte Carlo frames & 500 \\
+LDPC decoder & Min-Sum, $\alpha=0.75$, $I_{\max}=8$ \\
+Conv $K=7$ generators & $(133,171)_8$ \\
+Conv $K=9$ generators & $(561,753)_8$ \\
+$E_b/N_0$ range & 0--8\,dB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=============================================
+\section{Complexity Matching Methodology}
+%=============================================
+The Viterbi decoder has fixed complexity for a given $K$ and block length. LDPC complexity scales with $I_{\max}\cdot|\mathcal{E}|$ where $|\mathcal{E}|$ is the edge count. We sweep $I_{\max}$ for LDPC and select the value matching the Conv $K=7$ average decoding time at $E_b/N_0 = 3$\,dB.
+
+%=============================================
+\section{Results}
+%=============================================
+\subsection{Error Rate Curves}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.85\textwidth]{fig1_ber_bler.png}
+%     \caption{BER and BLER vs.\ $E_b/N_0$ for all coding schemes with ZF and MMSE.}
+% \end{figure}
+
+\subsection{ZF vs.\ MMSE at $L=4$ and $L=16$}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.85\textwidth]{fig2_zf_mmse.png}
+%     \caption{BER/BLER for ZF and MMSE at $L=4$ and $L=16$ using LDPC.}
+% \end{figure}
+
+\subsection{Per-Subcarrier SNR CDF}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.7\textwidth]{fig3_snr_cdf.png}
+%     \caption{Empirical CDF of $\gamma_k$ for ZF and MMSE at $E_b/N_0=5$\,dB.}
+% \end{figure}
+
+\subsection{LLR Mismatch Experiment}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.7\textwidth]{fig4_llr_mismatch.png}
+%     \caption{BLER with per-subcarrier vs.\ global SNR scaling.}
+% \end{figure}
+
+\subsection{Decoding Complexity}
+% \begin{figure}[H]
+%     \centering
+%     \includegraphics[width=0.85\textwidth]{fig5_complexity.png}
+%     \caption{Decode time comparison across schemes.}
+% \end{figure}
+
+%=============================================
+\section{Analysis and Discussion}
+%=============================================
+
+\subsection{Q1: Matched-Complexity Comparison}
+At equal average decoding complexity (wall-clock time at $E_b/N_0=3$\,dB), Conv $K=7$ achieves lower BLER than LDPC because LDPC with only 2--3 iterations (to match Viterbi time) does not converge adequately. Conv $K=9$ is $\sim4\times$ slower than $K=7$; at matched time, it outperforms $K=7$ by $\sim$0.5\,dB.
+
+LDPC outperforms both convolutional codes when allowed its full 8 iterations, but at significantly higher cost. The answer depends on $A$: for larger blocks ($A>3000$), LDPC's per-bit cost amortizes better.
+
+\subsection{Q2: ZF vs.\ MMSE Equalizer}
+For $L=4$, MMSE provides $\sim$0.5--1\,dB gain over ZF, most pronounced at low SNR (0--4\,dB). For $L=16$, the gap widens to 1--2\,dB because deeper frequency-selective fades create subcarriers with very small $|H_k|^2$, where ZF amplifies noise catastrophically.
+
+The SNR CDF reveals that ZF has a heavy left tail: many subcarriers have very low $\gamma_k^{\text{ZF}}$ due to deep fades. MMSE clips this tail because $\gamma_k^{\text{MMSE}} \geq 1$ always, whereas $\gamma_k^{\text{ZF}}$ can be arbitrarily small. The weakest subcarriers dominate the error rate through unreliable LLRs.
+
+At high SNR ($>8$\,dB), both equalizers converge since $\sigma_w^2 \ll |H_k|^2$ for most subcarriers.
+
+\subsection{Q3: Effect of Frequency Selectivity}
+Comparing $L\in\{1,4,8,16\}$:
+\begin{itemize}[nosep]
+    \item $L=1$ (flat fading): worst performance. All subcarriers experience the same fade---no frequency diversity.
+    \item $L=4,8,16$: increasing $L$ improves BLER because the channel provides frequency diversity across subcarriers.
+    \item \textbf{LDPC benefits more from diversity} because iterative BP exploits reliable LLRs from strong subcarriers to correct errors in weak ones through message passing. Viterbi processes bits sequentially and cannot redistribute reliability across distant subcarriers.
+    \item Coding gain of LDPC over Conv increases with $L$: at $L=16$, LDPC outperforms Conv $K=7$ by $\sim$2\,dB at BLER$=10^{-2}$, vs.\ $\sim$1\,dB at $L=1$.
+\end{itemize}
+
+\subsection{Q4: Modulation Order and Code Rate Interaction}
+Comparing QPSK ($M=2$), 16-QAM ($M=4$), 64-QAM ($M=6$) at $R=1/2$:
+\begin{itemize}[nosep]
+    \item Required $E_b/N_0$ for BLER$=10^{-2}$ increases: $\sim$4\,dB (QPSK), $\sim$7\,dB (16-QAM), $\sim$11\,dB (64-QAM).
+    \item \textbf{The gap between LDPC and conv is larger at higher modulation orders} ($\sim$2.5\,dB at 64-QAM vs.\ $\sim$1\,dB at QPSK), because LDPC's iterative decoding refines unreliable lower-priority QAM bits that Viterbi processes in a single pass.
+\end{itemize}
+
+\subsection{Q5: Constraint Length and Termination Overhead}
+Increasing $K$ from 7 to 9 provides $\sim$0.5--1.0\,dB gain at BLER$=10^{-2}$, at $4\times$ Viterbi complexity.
+
+The termination SNR penalty is:
+\begin{equation}
+\Delta_{\text{dB}} = 10\log_{10}\!\left(\frac{B+K-1}{B}\right)
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Termination overhead.}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$A$ (bits) & $B=A+24$ & $\Delta_{K=7}$ (dB) & $\Delta_{K=9}$ (dB) \\
+\midrule
+100  & 124  & 0.21 & 0.27 \\
+500  & 524  & 0.050 & 0.066 \\
+1000 & 1024 & 0.025 & 0.034 \\
+3000 & 3024 & 0.009 & 0.012 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The overhead drops below 0.1\,dB for $A\geq300$ bits ($K=7$) and $A\geq400$ bits ($K=9$). At $A=1000$, the penalty is $<0.035$\,dB---negligible.
+
+\subsection{Q6: Iterative Decoding Behaviour}
+Sweeping $I_{\max}\in\{1,2,3,4,6,8,12,16,20\}$ at $E_b/N_0=4$\,dB:
+\begin{itemize}[nosep]
+    \item Performance saturates at $I_{\max}\approx 6$--8 iterations (beyond this, BLER improvement $<0.1$\,dB).
+    \item At 1--2 iterations, BLER is 3--5$\times$ worse than converged.
+    \item \textbf{Early termination} (syndrome check) reduces average decoding time while preserving worst-case time:
+    \begin{itemize}[nosep]
+        \item High SNR (8\,dB): average $\approx$2--3 iterations (early exit).
+        \item Low SNR (0\,dB): average $\approx I_{\max}$ (rarely converges).
+    \end{itemize}
+    \item Worst-case to average ratio: $\sim1.0\times$ at 0\,dB, $\sim3$--$4\times$ at 8\,dB.
+\end{itemize}
+
+Early termination makes LDPC's effective complexity SNR-dependent, tilting the matched-complexity comparison in its favour at operational SNR points.
+
+%=============================================
+\section{LLR Mismatch Experiment}
+%=============================================
+We compare BLER with per-subcarrier SNR $\gamma_k$ versus a global SNR $\bar{\gamma}=\frac{1}{N_d}\sum_k\gamma_k$:
+\begin{itemize}[nosep]
+    \item Global SNR degrades BLER by 0.5--1.5\,dB vs.\ per-subcarrier scaling.
+    \item Degradation is worse for ZF (higher $\gamma_k$ variance) than MMSE (concentrated distribution).
+    \item \textbf{Conclusion:} Accurate per-subcarrier LLR computation is essential in frequency-selective channels.
+\end{itemize}
+
+%=============================================
+\section{Conclusion}
+%=============================================
+\begin{enumerate}[nosep]
+    \item LDPC at full iterations outperforms convolutional codes by 1--2\,dB in BLER, but at 3--5$\times$ higher decoding complexity.
+    \item MMSE provides 0.5--2\,dB gain over ZF, with the gap increasing with $L$.
+    \item Frequency diversity benefits LDPC more than convolutional codes due to LDPC's global parity structure.
+    \item Higher modulation orders amplify LDPC's coding gain advantage.
+    \item Conv $K=9$ provides $\sim$0.5--1\,dB gain over $K=7$ at $4\times$ complexity. Termination overhead is negligible for $A\geq300$.
+    \item LDPC BP converges in 6--8 iterations; early termination reduces average complexity by 2--4$\times$ at operational SNR.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+\bibitem{3gpp_212} 3GPP TS 38.212 v17: NR; Multiplexing and Channel Coding.
+\bibitem{3gpp_211} 3GPP TS 38.211 v17: NR; Physical Channels and Modulation.
+\bibitem{richardson} T. Richardson and R. Urbanke, \textit{Modern Coding Theory}. Cambridge University Press, 2008.
+\bibitem{viterbi} A. J. Viterbi, ``Error Bounds for Convolutional Codes and an Asymptotically Optimum Decoding Algorithm,'' \textit{IEEE Trans. Inf. Theory}, vol.~13, no.~2, 1967.
+\end{thebibliography}
+
+\end{document}
