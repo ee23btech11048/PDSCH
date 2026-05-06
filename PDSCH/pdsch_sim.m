@@ -4,22 +4,23 @@ function pdsch_sim()
 %  Project: EE5770 Codes and Waveforms
 
 %% ============ BASE CONFIGURATION ============
-cfg.A       = 1000;
-cfg.RNTI    = 1;
-cfg.cellId  = 0;
-cfg.R       = 1/2;
-cfg.M       = 2;
-cfg.NFFT    = 256;
-cfg.L       = 4;
-cfg.NCP     = cfg.L;
-cfg.EbN0_dB = 0:1:8;
-cfg.num_frames = 500;
-cfg.ldpc_max_iter = 8;
-cfg.conv_K  = 7;
-cfg.conv_gen = [133 171];
-cfg.coding  = 'conv';
-cfg.equalizer = 'mmse';
-cfg.use_global_snr = false;
+% All simulation parameters are stored in a single 'cfg' struct.
+cfg.A       = 1000;       % Transport block size in bits (payload before CRC)
+cfg.RNTI    = 1;          % Radio Network Temporary Identifier (scrambling seed)
+cfg.cellId  = 0;          % Physical cell ID (scrambling seed)
+cfg.R       = 1/2;        % Target code rate
+cfg.M       = 2;          % Bits per QAM symbol: 2=QPSK, 4=16QAM, 6=64QAM
+cfg.NFFT    = 256;        % FFT size (number of OFDM subcarriers)
+cfg.L       = 4;          % Number of channel taps (Rayleigh fading)
+cfg.NCP     = cfg.L;      % Cyclic prefix length (must be >= L to avoid ISI)
+cfg.EbN0_dB = 0:1:8;      % Eb/N0 sweep range in dB
+cfg.num_frames = 500;     % Monte Carlo transport blocks per SNR point
+cfg.ldpc_max_iter = 8;    % Maximum LDPC Min-Sum decoder iterations
+cfg.conv_K  = 7;          % Convolutional code constraint length
+cfg.conv_gen = [133 171]; % Generator polynomials in octal (stored as decimal digits)
+cfg.coding  = 'conv';     % Channel coding: 'conv' or 'ldpc'
+cfg.equalizer = 'mmse';   % Equalizer type: 'mmse' or 'zf'
+cfg.use_global_snr = false; % false=per-subcarrier LLR scaling, true=global (mismatch exp)
 
 %% ============ EXP 1: Core BER/BLER (all schemes, L=4) ============
 disp('========== EXP 1: Core BER/BLER ==========');
@@ -225,38 +226,62 @@ disp('========== ALL EXPERIMENTS COMPLETE ==========');
 end
 
 %% ================================================================
+%  run_sim: Core Monte Carlo simulation loop
+%  Inputs:  cfg - configuration struct with all parameters
+%  Outputs: ber_res  - BER at each Eb/N0 point
+%           bler_res - BLER at each Eb/N0 point
+%           dt_res   - Average decode time (seconds) at each Eb/N0
+%
+%  Chain: TX bits -> CRC24A -> Segmentation -> Encode -> Rate Match
+%         -> Scramble -> QAM Map -> OFDM -> Channel -> OFDM Demod
+%         -> Equalize -> LLR Demap -> Descramble -> Rate Recover
+%         -> Decode -> CRC Check -> BER/BLER
+%% ================================================================
 function [ber_res, bler_res, dt_res] = run_sim(cfg)
     ber_res  = zeros(size(cfg.EbN0_dB));
     bler_res = zeros(size(cfg.EbN0_dB));
     dt_res   = zeros(size(cfg.EbN0_dB));
-    % Compute E based on coding scheme
-    B = cfg.A + 24;  % Info + CRC24A
+    
+    % --- Compute rate-matched output length E ---
+    % E must be a multiple of M (bits per symbol) for clean QAM mapping.
+    B = cfg.A + 24;  % Info bits + 24-bit CRC-24A
     if strcmpi(cfg.coding, 'ldpc')
-        % LDPC: E determined by target rate (LDPC has internal rate matching)
+        % LDPC: E is set by target rate; LDPC handles internal rate matching
         cfg.E = cfg.M * ceil(cfg.A / cfg.R / cfg.M);
     else
-        % Conv: E = full coded length (no puncturing, tail included)
+        % Conv: E = actual coded output length (including K-1 tail bits)
+        % No puncturing — tail bits carry CRC information and must not be lost
         coded_len_conv = length(cfg.conv_gen) * (B + cfg.conv_K - 1);
         cfg.E = cfg.M * ceil(coded_len_conv / cfg.M);
     end
-    % Termination overhead experiment: use nominal R=1/2 for noise calc
+    
+    % --- Compute effective code rate for SNR calculation ---
+    % Reff accounts for tail-bit overhead in convolutional codes
     if isfield(cfg, 'force_nominal_rate') && cfg.force_nominal_rate
-        Reff = cfg.R;  % Nominal rate (ignores tail overhead)
+        Reff = cfg.R;  % Use nominal R=1/2 (termination overhead experiment)
     else
-        Reff = B / cfg.E;  % Effective rate (accounts for tail)
+        Reff = B / cfg.E;  % True effective rate including tail overhead
     end
 
+    % --- Main SNR sweep loop ---
     for si = 1:length(cfg.EbN0_dB)
         EbN0 = cfg.EbN0_dB(si);
+        % Noise variance: sigma^2 = 1/(2*Reff*M*10^(Eb/N0 in linear))
         sigma2_w = 1 / (2 * Reff * cfg.M * 10^(EbN0/10));
         tbe = 0; tb = 0; tble = 0; tbl = 0; tdt = 0;
 
         for fr = 1:cfg.num_frames
-            % ---------------- TRANSMITTER ----------------
+            %% ============ TRANSMITTER ============
+            % Step 1: Generate random payload bits
             tx_bits = randi([0 1], cfg.A, 1);
+            
+            % Step 2: Attach CRC-24A for error detection at the receiver
             tx_crc = crc24a_encode(tx_bits);
+            
+            % Step 3: Segment into code blocks (with CRC-24B if >1 segment)
             code_blocks = code_block_segment(tx_crc, cfg.coding);
             
+            % Step 4: Channel encode each code block
             coded_bits = [];
             cb_coded_lens = zeros(length(code_blocks),1);
             for cb = 1:length(code_blocks)
@@ -269,28 +294,40 @@ function [ber_res, bler_res, dt_res] = run_sim(cfg)
                 coded_bits = [coded_bits; cc];
             end
 
+            % Step 5: Rate matching — truncate or repeat to match E bits
             rm_bits = rate_match(coded_bits, cfg.E);
+            
+            % Step 6: Scrambling — XOR with Gold sequence for interference randomization
             scr_seq = scramble_seq(cfg.E, cfg.RNTI, cfg.cellId);
             scr_bits = xor(rm_bits(:), scr_seq(:));
+            
+            % Step 7: QAM modulation — Gray-mapped constellation
             symbols = gray_map(scr_bits, cfg.M);
             
+            % Step 8: OFDM modulation — IFFT + cyclic prefix insertion
             [tx_sig, sc_idx, num_sym] = ofdm_modulate(symbols, cfg.NFFT, cfg.NCP);
             
-            % ---------------- CHANNEL ----------------
+            %% ============ CHANNEL ============
+            % L-tap Rayleigh fading + AWGN (block fading per OFDM symbol)
             [rx_sig, h_taps] = channel_multipath(tx_sig, cfg.L, cfg.NFFT, cfg.NCP, num_sym, sigma2_w);
             
-            % ---------------- RECEIVER ----------------
+            %% ============ RECEIVER ============
+            % Step 9: OFDM demod + per-subcarrier equalization (ZF or MMSE)
             [eq_sym, snr_sc] = ofdm_demod_equalize(rx_sig, h_taps, cfg.NFFT, cfg.NCP, num_sym, sc_idx, sigma2_w, cfg.equalizer);
 
+            % Trim to actual number of data symbols
             eq_sym = eq_sym(1:length(symbols));
             snr_sc = snr_sc(1:length(symbols));
 
-            % LLR mismatch experiment: use global (mean) SNR if requested
+            % LLR mismatch experiment: replace per-SC SNR with global mean
             if isfield(cfg, 'use_global_snr') && cfg.use_global_snr
                 snr_sc(:) = mean(snr_sc);
             end
 
+            % Step 10: Soft demapping — compute LLRs using per-SC SNR
             llr = gray_demap_llr(eq_sym, cfg.M, snr_sc);
+            
+            % Step 11: Descramble LLRs (flip sign where scramble bit = 1)
             llr_d = descramble_llr(llr, scr_seq);
             
             % RX side calculation of expected coded length (NO CHEATING!)
@@ -436,6 +473,10 @@ function [snr_zf_all, snr_mmse_all] = collect_snr_cdf(cfg, EbN0_fixed)
 end
 
 %% ==================== CRC ====================
+% crc_calc: Compute CRC using a shift-register implementation.
+%   bits - input bit vector
+%   poly - generator polynomial as binary coefficient vector (MSB first)
+%   Returns: CRC remainder bits
 function crc = crc_calc(bits, poly)
     bits = bits(:).';
     crc_len = length(poly) - 1;
@@ -502,8 +543,15 @@ function blocks = code_block_segment(bits, coding_type)
 end
 
 %% ==================== LDPC ENCODER ====================
+% ldpc_encode_block: 5G NR LDPC encoding per TS 38.212 Section 5.3
+%   Selects BG1 or BG2 based on block size, finds lifting size Z,
+%   builds parity-check matrix H, and computes parity bits via
+%   p = inv(Hp) * (Hsys * info) over GF(2).
+%   The inverse inv(Hp) is cached after first call to avoid
+%   repeated O(m^3) Gaussian elimination.
+%   Filler bits (K_ldpc - K) are zero-padded and excluded from output.
 function coded = ldpc_encode_block(info_bits)
-    persistent enc_cache
+    persistent enc_cache  % Cache: stores H partitions and inv(Hp)
     
     info_bits = info_bits(:);
     K = length(info_bits);
@@ -636,8 +684,15 @@ function e = bg1_entries(~)
 end
 
 %% ==================== VECTORIZED LDPC DECODER ====================
+% ldpc_decode_block: Normalized Min-Sum LDPC decoder
+%   Implements iterative belief propagation on the Tanner graph:
+%   - Check Node Update (CNU): min-sum approximation with alpha=0.75
+%   - Variable Node Update (VNU): sum of intrinsic + extrinsic messages
+%   - Early termination via syndrome check: H*x_hat = 0 mod 2
+%   Edge groupings (row/col boundaries) are precomputed and cached.
+%   Filler bit positions get LLR=+1000 (known to be zero).
 function [decoded, success] = ldpc_decode_block(llr_in, max_iter, info_len)
-    persistent cache
+    persistent cache  % Cache: H matrix, edge maps, row/col boundaries
     
     llr_in = llr_in(:);
     
@@ -807,6 +862,11 @@ function [decoded, success] = ldpc_decode_block(llr_in, max_iter, info_len)
 end
 
 %% ==================== CONVOLUTIONAL ENCODER ====================
+% conv_encode: Rate-1/2 convolutional encoder with zero-tail termination
+%   K        - constraint length (7 or 9)
+%   gen_poly - generator polynomials in octal notation (e.g. [133 171])
+%   Appends K-1 zero tail bits to force trellis to all-zero state.
+%   Output length: 2 * (len(info) + K - 1)
 function coded = conv_encode(info_bits, K, gen_poly)
     info_bits = info_bits(:).';
     ng = length(gen_poly);
@@ -841,6 +901,11 @@ function coded = conv_encode(info_bits, K, gen_poly)
 end
 
 %% ==================== VITERBI DECODER ====================
+% viterbi_decode: Soft-decision Viterbi decoder with traceback
+%   Uses soft LLRs as branch metrics: BM = sum(llr_g * (1 - 2*output_g))
+%   Path metric recursion: PM(s') = max over predecessors [PM(s) + BM]
+%   Traceback from all-zero terminal state (zero-tail guaranteed).
+%   Trellis tables (next-state, output) are cached after first call.
 function decoded = viterbi_decode(llr, K, gen_poly)
     persistent cached_K cached_gen_poly cached_nxt cached_outp cached_ns cached_ng cached_mem
     
@@ -935,6 +1000,9 @@ function decoded = viterbi_decode(llr, K, gen_poly)
 end
 
 %% ==================== RATE MATCHING ====================
+% rate_match: Circular buffer rate matching
+%   If E <= coded_len: puncture (take first E bits)
+%   If E > coded_len: repeat via circular buffer
 function out = rate_match(coded, E)
     coded = coded(:); N = length(coded);
     if E <= N
@@ -962,8 +1030,11 @@ function llr_out = rate_recover(llr_in, coded_len, E)
 end
 
 %% ==================== SCRAMBLING ====================
+% scramble_seq: Generate length-31 Gold sequence per TS 38.211 Sec 5.2.1
+%   c_init = RNTI * 2^15 + cellId (user-specific scrambling)
+%   Uses two m-sequences x1, x2 with Nc=1600 offset
 function seq = scramble_seq(len, rnti, cellId)
-    Nc = 1600;
+    Nc = 1600;  % 3GPP-defined initialization offset
     c_init = rnti * 2^15 + cellId;
     tl = len + Nc;
     x1 = zeros(1, tl + 31);
@@ -986,6 +1057,9 @@ function seq = scramble_seq(len, rnti, cellId)
     end
 end
 
+% descramble_llr: Undo scrambling in soft domain
+%   For scramble bit=0: LLR unchanged. For bit=1: LLR sign flipped.
+%   Equivalent to: llr_out = llr_in * (1 - 2*scr_bit)
 function llr_out = descramble_llr(llr_in, scr_seq)
     llr_in = llr_in(:); scr_seq = scr_seq(:);
     sl = min(length(llr_in), length(scr_seq));
@@ -994,6 +1068,10 @@ function llr_out = descramble_llr(llr_in, scr_seq)
 end
 
 %% ==================== MODULATION ====================
+% gray_map: Gray-coded QAM modulation per TS 38.211
+%   M=2: QPSK (1/sqrt(2) normalization)
+%   M=4: 16-QAM (1/sqrt(10) normalization)
+%   M=6: 64-QAM (1/sqrt(42) normalization)
 function symbols = gray_map(bits, M)
     bits = bits(:);
     ns = floor(length(bits) / M);
@@ -1023,6 +1101,10 @@ function symbols = gray_map(bits, M)
     end
 end
 
+% gray_demap_llr: Compute soft LLRs from equalized symbols
+%   For QPSK: closed-form LLR = 4*gamma*Re/Im(symbol)/sqrt(2)
+%   For 16/64-QAM: max-log-MAP approximation over constellation
+%   snr = per-subcarrier post-equalization SNR (gamma_k)
 function llr = gray_demap_llr(symbols, M, snr)
     symbols = symbols(:); snr = snr(:);
     ns = length(symbols);
@@ -1090,6 +1172,10 @@ function [con, bt] = get_constellation(M)
 end
 
 %% ==================== OFDM ====================
+% ofdm_modulate: Map symbols to OFDM subcarriers, IFFT, add CP
+%   Uses 75% of subcarriers as data (excluding DC).
+%   Subcarriers split: lower half near DC, upper half near Nyquist.
+%   CP = last NCP samples prepended to each OFDM symbol.
 function [tx_sig, sc_idx, num_sym] = ofdm_modulate(symbols, NFFT, NCP)
     symbols = symbols(:);
     nds = floor(NFFT * 0.75);
@@ -1112,6 +1198,10 @@ function [tx_sig, sc_idx, num_sym] = ofdm_modulate(symbols, NFFT, NCP)
     end
 end
 
+% ofdm_demod_equalize: CP removal, FFT, per-subcarrier equalization
+%   ZF:   S_hat = Y/H,              gamma = |H|^2 / sigma^2
+%   MMSE: S_hat = H'Y/(|H|^2+sig2), gamma = (|H|^2+sig2) / sigma^2
+%   Returns equalized symbols and per-subcarrier SNR for LLR computation.
 function [eq_sym, snr_out] = ofdm_demod_equalize(rx_sig, h_taps, NFFT, NCP, num_sym, sc_idx, sigma2_w, eq_type)
     num_sc = length(sc_idx);
     eq_sym = zeros(num_sym * num_sc, 1);
@@ -1146,6 +1236,10 @@ function [eq_sym, snr_out] = ofdm_demod_equalize(rx_sig, h_taps, NFFT, NCP, num_
 end
 
 %% ==================== CHANNEL ====================
+% channel_multipath: L-tap block-fading Rayleigh channel + AWGN
+%   Each OFDM symbol gets independent channel realization.
+%   Taps: h_i ~ CN(0, 1/L), so E[||h||^2] = 1 (unit average power).
+%   Noise: w ~ CN(0, sigma2_w) per sample.
 function [rx_sig, h_taps] = channel_multipath(tx_sig, L, NFFT, NCP, num_sym, sigma2_w)
     sl = NFFT + NCP;
     rx_sig = zeros(num_sym * sl, 1);
