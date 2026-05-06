@@ -8,27 +8,23 @@ cfg.A       = 1000;
 cfg.RNTI    = 1;
 cfg.cellId  = 0;
 cfg.R       = 1/2;
-cfg.M       = 2; % Bits per symbol: 2 (QPSK), 4 (16-QAM), 6 (64-QAM)
+cfg.M       = 2;
 cfg.NFFT    = 256;
-cfg.L       = 4; % number of channel taps
+cfg.L       = 4;
 cfg.NCP     = cfg.L;
 cfg.EbN0_dB = 0:1:8;
 cfg.num_frames = 500;
 cfg.ldpc_max_iter = 8;
 cfg.conv_K  = 7;
-cfg.conv_gen = [133 171];  % Octal: (133,171)_8
+cfg.conv_gen = [133 171];
 cfg.coding  = 'conv';
 cfg.equalizer = 'mmse';
-cfg.use_global_snr = false;  % false=per-subcarrier LLR, true=global SNR
+cfg.use_global_snr = false;
 
-% E is computed inside run_sim per coding scheme
-
-%% ============ EXPERIMENT 1: Core BER/BLER (all schemes, L=4) ============
-disp('========== EXPERIMENT 1: Core BER/BLER ==========');
-
+%% ============ EXP 1: Core BER/BLER (all schemes, L=4) ============
+disp('========== EXP 1: Core BER/BLER ==========');
 disp('--- Conv K=7 / MMSE ---');
 [ber_ck7m, bler_ck7m, dt_ck7m] = run_sim(cfg);
-
 disp('--- Conv K=7 / ZF ---');
 c2 = cfg; c2.equalizer = 'zf';
 [ber_ck7z, bler_ck7z, dt_ck7z] = run_sim(c2);
@@ -36,7 +32,6 @@ c2 = cfg; c2.equalizer = 'zf';
 disp('--- Conv K=9 / MMSE ---');
 c3 = cfg; c3.conv_K = 9; c3.conv_gen = [561 753];
 [ber_ck9m, bler_ck9m, dt_ck9m] = run_sim(c3);
-
 disp('--- Conv K=9 / ZF ---');
 c4 = cfg; c4.conv_K = 9; c4.conv_gen = [561 753]; c4.equalizer = 'zf';
 [ber_ck9z, bler_ck9z, dt_ck9z] = run_sim(c4);
@@ -44,89 +39,187 @@ c4 = cfg; c4.conv_K = 9; c4.conv_gen = [561 753]; c4.equalizer = 'zf';
 disp('--- LDPC / MMSE ---');
 c5 = cfg; c5.coding = 'ldpc';
 [ber_lm, bler_lm, dt_lm] = run_sim(c5);
-
 disp('--- LDPC / ZF ---');
 c6 = cfg; c6.coding = 'ldpc'; c6.equalizer = 'zf';
 [ber_lz, bler_lz, dt_lz] = run_sim(c6);
 
-% Plot 1: BER & BLER (all schemes)
+EbN0 = cfg.EbN0_dB;
 figure('Name','Fig1: BER and BLER - All Schemes');
 subplot(2,1,1);
-semilogy(cfg.EbN0_dB, ber_ck7m, 'bo-', cfg.EbN0_dB, ber_ck7z, 'b^--', ...
-         cfg.EbN0_dB, ber_ck9m, 'go-', cfg.EbN0_dB, ber_ck9z, 'g^--', ...
-         cfg.EbN0_dB, ber_lm,   'rs-', cfg.EbN0_dB, ber_lz,   'r^--', 'LineWidth',1.5);
+semilogy(EbN0,ber_ck7m,'bo-',EbN0,ber_ck7z,'b^--', ...
+         EbN0,ber_ck9m,'go-',EbN0,ber_ck9z,'g^--', ...
+         EbN0,ber_lm,'rs-',  EbN0,ber_lz,'r^--','LineWidth',1.5);
 grid on; xlabel('E_b/N_0 (dB)'); ylabel('BER');
 legend('Conv K=7 MMSE','Conv K=7 ZF','Conv K=9 MMSE','Conv K=9 ZF', ...
        'LDPC MMSE','LDPC ZF','Location','southwest');
-title('BER: LDPC vs Conv K=7 vs Conv K=9');
+title(sprintf('BER (A=%d, R=1/2, QPSK, L=%d, %d frames)',cfg.A,cfg.L,cfg.num_frames));
 subplot(2,1,2);
-semilogy(cfg.EbN0_dB, max(bler_ck7m,1e-4), 'bo-', cfg.EbN0_dB, max(bler_ck7z,1e-4), 'b^--', ...
-         cfg.EbN0_dB, max(bler_ck9m,1e-4), 'go-', cfg.EbN0_dB, max(bler_ck9z,1e-4), 'g^--', ...
-         cfg.EbN0_dB, max(bler_lm,1e-4),   'rs-', cfg.EbN0_dB, max(bler_lz,1e-4),   'r^--', 'LineWidth',1.5);
+semilogy(EbN0,max(bler_ck7m,1e-4),'bo-',EbN0,max(bler_ck7z,1e-4),'b^--', ...
+         EbN0,max(bler_ck9m,1e-4),'go-',EbN0,max(bler_ck9z,1e-4),'g^--', ...
+         EbN0,max(bler_lm,1e-4),'rs-',  EbN0,max(bler_lz,1e-4),'r^--','LineWidth',1.5);
 grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
 legend('Conv K=7 MMSE','Conv K=7 ZF','Conv K=9 MMSE','Conv K=9 ZF', ...
        'LDPC MMSE','LDPC ZF','Location','southwest');
-title('BLER: LDPC vs Conv K=7 vs Conv K=9');
+title('BLER');
 
-%% ============ EXPERIMENT 2: ZF vs MMSE at L=4 and L=16 ============
-disp('========== EXPERIMENT 2: ZF vs MMSE, L=4 and L=16 ==========');
-
+%% ============ EXP 2: ZF vs MMSE at L=4 and L=16 ============
+disp('========== EXP 2: ZF vs MMSE, L=4 and L=16 ==========');
 disp('--- LDPC MMSE L=16 ---');
-c7 = cfg; c7.coding = 'ldpc'; c7.L = 16; c7.NCP = 16;
-[ber_lm16, bler_lm16, ~] = run_sim(c7);
+c7 = cfg; c7.coding='ldpc'; c7.L=16; c7.NCP=16;
+[ber_lm16,bler_lm16,~] = run_sim(c7);
 disp('--- LDPC ZF L=16 ---');
-c8 = cfg; c8.coding = 'ldpc'; c8.L = 16; c8.NCP = 16; c8.equalizer = 'zf';
-[ber_lz16, bler_lz16, ~] = run_sim(c8);
+c8 = cfg; c8.coding='ldpc'; c8.L=16; c8.NCP=16; c8.equalizer='zf';
+[ber_lz16,bler_lz16,~] = run_sim(c8);
 
-figure('Name','Fig2: ZF vs MMSE (L=4 and L=16)');
+figure('Name','Fig2: ZF vs MMSE (L=4,L=16)');
 subplot(2,1,1);
-semilogy(cfg.EbN0_dB, ber_lm,   'bs-',  cfg.EbN0_dB, ber_lz,   'b^--', ...
-         cfg.EbN0_dB, ber_lm16, 'rs-',  cfg.EbN0_dB, ber_lz16, 'r^--', 'LineWidth',1.5);
+semilogy(EbN0,ber_lm,'bs-',EbN0,ber_lz,'b^--', ...
+         EbN0,ber_lm16,'rs-',EbN0,ber_lz16,'r^--','LineWidth',1.5);
 grid on; xlabel('E_b/N_0 (dB)'); ylabel('BER');
 legend('MMSE L=4','ZF L=4','MMSE L=16','ZF L=16','Location','southwest');
-title('BER: ZF vs MMSE Equalizer');
+title('BER: ZF vs MMSE');
 subplot(2,1,2);
-semilogy(cfg.EbN0_dB, max(bler_lm,1e-4),   'bs-',  cfg.EbN0_dB, max(bler_lz,1e-4),   'b^--', ...
-         cfg.EbN0_dB, max(bler_lm16,1e-4), 'rs-',  cfg.EbN0_dB, max(bler_lz16,1e-4), 'r^--', 'LineWidth',1.5);
+semilogy(EbN0,max(bler_lm,1e-4),'bs-',EbN0,max(bler_lz,1e-4),'b^--', ...
+         EbN0,max(bler_lm16,1e-4),'rs-',EbN0,max(bler_lz16,1e-4),'r^--','LineWidth',1.5);
 grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
 legend('MMSE L=4','ZF L=4','MMSE L=16','ZF L=16','Location','southwest');
-title('BLER: ZF vs MMSE Equalizer');
+title('BLER: ZF vs MMSE');
 
-%% ============ EXPERIMENT 3: Per-subcarrier SNR CDF ============
-disp('========== EXPERIMENT 3: SNR Distribution CDF ==========');
+%% ============ EXP 3: Per-subcarrier SNR CDF ============
+disp('========== EXP 3: SNR CDF ==========');
 [snr_zf, snr_mmse] = collect_snr_cdf(cfg, 5);
-figure('Name','Fig3: Per-Subcarrier SNR CDF');
-cdfplot(10*log10(max(snr_zf, 1e-10))); hold on;
-cdfplot(10*log10(max(snr_mmse, 1e-10)));
+figure('Name','Fig3: SNR CDF');
+snr_zf_dB = sort(10*log10(max(snr_zf,1e-10)));
+snr_mmse_dB = sort(10*log10(max(snr_mmse,1e-10)));
+plot(snr_zf_dB, linspace(0,1,length(snr_zf_dB)), 'b-', ...
+     snr_mmse_dB, linspace(0,1,length(snr_mmse_dB)), 'r-', 'LineWidth',1.5);
 xlabel('\gamma_k (dB)'); ylabel('CDF'); grid on;
 legend('ZF','MMSE','Location','southeast');
-title('Per-Subcarrier SNR Distribution (E_b/N_0 = 5 dB, L=4)');
+title('Per-Subcarrier SNR CDF (E_b/N_0=5 dB, L=4)');
 
-%% ============ EXPERIMENT 4: LLR Mismatch ============
-disp('========== EXPERIMENT 4: LLR Mismatch Experiment ==========');
-disp('--- LDPC MMSE (global SNR) ---');
-c9 = cfg; c9.coding = 'ldpc'; c9.use_global_snr = true;
-[~, bler_lm_g, ~] = run_sim(c9);
-disp('--- LDPC ZF (global SNR) ---');
-c10 = cfg; c10.coding = 'ldpc'; c10.equalizer = 'zf'; c10.use_global_snr = true;
-[~, bler_lz_g, ~] = run_sim(c10);
+%% ============ EXP 4: LLR Mismatch ============
+disp('========== EXP 4: LLR Mismatch ==========');
+disp('--- LDPC MMSE global ---');
+c9 = cfg; c9.coding='ldpc'; c9.use_global_snr=true;
+[~,bler_lm_g,~] = run_sim(c9);
+disp('--- LDPC ZF global ---');
+c10 = cfg; c10.coding='ldpc'; c10.equalizer='zf'; c10.use_global_snr=true;
+[~,bler_lz_g,~] = run_sim(c10);
 
 figure('Name','Fig4: LLR Mismatch');
-semilogy(cfg.EbN0_dB, max(bler_lm,1e-4),  'bs-',  cfg.EbN0_dB, max(bler_lz,1e-4),  'b^--', ...
-         cfg.EbN0_dB, max(bler_lm_g,1e-4), 'rs-', cfg.EbN0_dB, max(bler_lz_g,1e-4), 'r^--', 'LineWidth',1.5);
+semilogy(EbN0,max(bler_lm,1e-4),'bs-',EbN0,max(bler_lz,1e-4),'b^--', ...
+         EbN0,max(bler_lm_g,1e-4),'rs-',EbN0,max(bler_lz_g,1e-4),'r^--','LineWidth',1.5);
 grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
 legend('MMSE (per-SC)','ZF (per-SC)','MMSE (global)','ZF (global)','Location','southwest');
-title('LLR Mismatch: Per-Subcarrier vs Global SNR Scaling');
+title('LLR Mismatch: Per-Subcarrier vs Global SNR');
 
-%% ============ EXPERIMENT 5: Decoding Complexity ============
-figure('Name','Fig5: Decoding Complexity');
+%% ============ EXP 5: Decoding Complexity ============
+figure('Name','Fig5: Complexity');
 subplot(1,2,1);
 bar(categorical({'Conv K=7','Conv K=9','LDPC'}), [mean(dt_ck7m) mean(dt_ck9m) mean(dt_lm)]);
 ylabel('Avg Decode Time (s)'); title('Mean Decode Time (MMSE)');
 subplot(1,2,2);
-plot(cfg.EbN0_dB, dt_ck7m, 'bo-', cfg.EbN0_dB, dt_ck9m, 'go-', cfg.EbN0_dB, dt_lm, 'rs-', 'LineWidth',1.5);
+plot(EbN0,dt_ck7m,'bo-',EbN0,dt_ck9m,'go-',EbN0,dt_lm,'rs-','LineWidth',1.5);
 xlabel('E_b/N_0 (dB)'); ylabel('Avg Decode Time (s)');
 legend('Conv K=7','Conv K=9','LDPC'); grid on; title('Decode Time vs SNR');
+
+%% ============ EXP 6: Effect of Frequency Selectivity (L=1,8,16) ============
+disp('========== EXP 6: Frequency Selectivity ==========');
+L_vals = [1 8 16];
+bler_ldpc_L = zeros(length(L_vals), length(EbN0));
+bler_ck7_L  = zeros(length(L_vals), length(EbN0));
+for li = 1:length(L_vals)
+    Lv = L_vals(li);
+    fprintf('--- LDPC MMSE L=%d ---\n', Lv);
+    cl = cfg; cl.coding='ldpc'; cl.L=Lv; cl.NCP=Lv;
+    [~,bler_ldpc_L(li,:),~] = run_sim(cl);
+    fprintf('--- Conv K=7 MMSE L=%d ---\n', Lv);
+    cl2 = cfg; cl2.L=Lv; cl2.NCP=Lv;
+    [~,bler_ck7_L(li,:),~] = run_sim(cl2);
+end
+
+figure('Name','Fig6: Frequency Selectivity');
+styles = {'o-','s-','^-'}; colors_l = {'b','r','g'};
+subplot(1,2,1);
+for li = 1:length(L_vals)
+    semilogy(EbN0,max(bler_ldpc_L(li,:),1e-4),[colors_l{li} styles{li}],'LineWidth',1.5); hold on;
+end
+grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
+legend(arrayfun(@(x)sprintf('LDPC L=%d',x),L_vals,'Uni',0),'Location','southwest');
+title('LDPC BLER vs L');
+subplot(1,2,2);
+for li = 1:length(L_vals)
+    semilogy(EbN0,max(bler_ck7_L(li,:),1e-4),[colors_l{li} styles{li}],'LineWidth',1.5); hold on;
+end
+grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
+legend(arrayfun(@(x)sprintf('Conv K=7 L=%d',x),L_vals,'Uni',0),'Location','southwest');
+title('Conv K=7 BLER vs L');
+
+%% ============ EXP 7: Effect of Modulation Order ============
+disp('========== EXP 7: Modulation Order ==========');
+M_vals = [2 4 6];
+M_names = {'QPSK','16QAM','64QAM'};
+bler_ldpc_M = zeros(length(M_vals), length(EbN0));
+for mi = 1:length(M_vals)
+    fprintf('--- LDPC MMSE M=%d ---\n', M_vals(mi));
+    cm = cfg; cm.coding='ldpc'; cm.M=M_vals(mi);
+    [~,bler_ldpc_M(mi,:),~] = run_sim(cm);
+end
+
+figure('Name','Fig7: Modulation Order');
+for mi = 1:length(M_vals)
+    semilogy(EbN0,max(bler_ldpc_M(mi,:),1e-4),[colors_l{mi} styles{mi}],'LineWidth',1.5); hold on;
+end
+grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
+legend(M_names,'Location','southwest');
+title('BLER vs Modulation Order (LDPC, MMSE, L=4)');
+
+%% ============ EXP 8: BLER vs BP Iterations ============
+disp('========== EXP 8: BLER vs BP Iterations ==========');
+iter_vals = [1 2 3 4 6 8 12 16];
+snr_fixed = 4; % dB
+bler_iter = zeros(size(iter_vals));
+dt_iter = zeros(size(iter_vals));
+for ii = 1:length(iter_vals)
+    fprintf('--- LDPC Imax=%d at Eb/N0=%d dB ---\n', iter_vals(ii), snr_fixed);
+    ci = cfg; ci.coding='ldpc'; ci.EbN0_dB=snr_fixed;
+    ci.ldpc_max_iter = iter_vals(ii);
+    [~,bl,dt] = run_sim(ci);
+    bler_iter(ii) = bl;
+    dt_iter(ii) = dt;
+end
+
+figure('Name','Fig8: BLER vs BP Iterations');
+subplot(1,2,1);
+semilogy(iter_vals, max(bler_iter,1e-4), 'rs-', 'LineWidth',1.5, 'MarkerFaceColor','r');
+grid on; xlabel('Max BP Iterations'); ylabel('BLER');
+title(sprintf('BLER vs I_{max} (E_b/N_0=%d dB)',snr_fixed));
+subplot(1,2,2);
+plot(iter_vals, dt_iter*1000, 'bo-', 'LineWidth',1.5, 'MarkerFaceColor','b');
+grid on; xlabel('Max BP Iterations'); ylabel('Avg Decode Time (ms)');
+title('Decode Time vs I_{max}');
+
+%% ============ EXP 9: Termination Overhead ============
+disp('========== EXP 9: Termination Overhead ==========');
+% BLER with Eb/N0 computed using nominal R=1/2 vs effective R
+% Effective R accounts for tail bits: R_eff = B / (2*(B+K-1))
+% The run_sim already uses R_eff for noise computation.
+% To show "without correction": override E to use nominal R=1/2
+
+figure('Name','Fig9: Termination Overhead');
+semilogy(EbN0,max(bler_ck7m,1e-4),'bo-',EbN0,max(bler_ck9m,1e-4),'go-','LineWidth',1.5);
+hold on;
+% Re-run with nominal rate (overriding E to not account for tail)
+disp('--- Conv K=7 nominal rate ---');
+cn7 = cfg; cn7.force_nominal_rate = true;
+[~,bler_ck7_nom,~] = run_sim(cn7);
+disp('--- Conv K=9 nominal rate ---');
+cn9 = cfg; cn9.conv_K=9; cn9.conv_gen=[561 753]; cn9.force_nominal_rate=true;
+[~,bler_ck9_nom,~] = run_sim(cn9);
+semilogy(EbN0,max(bler_ck7_nom,1e-4),'b^--',EbN0,max(bler_ck9_nom,1e-4),'g^--','LineWidth',1.5);
+grid on; xlabel('E_b/N_0 (dB)'); ylabel('BLER');
+legend('K=7 (R_{eff})','K=9 (R_{eff})','K=7 (R=1/2)','K=9 (R=1/2)','Location','southwest');
+title('Conv Termination Overhead: Effective vs Nominal Rate');
 
 disp('========== ALL EXPERIMENTS COMPLETE ==========');
 end
@@ -146,7 +239,12 @@ function [ber_res, bler_res, dt_res] = run_sim(cfg)
         coded_len_conv = length(cfg.conv_gen) * (B + cfg.conv_K - 1);
         cfg.E = cfg.M * ceil(coded_len_conv / cfg.M);
     end
-    Reff = B / cfg.E;
+    % Termination overhead experiment: use nominal R=1/2 for noise calc
+    if isfield(cfg, 'force_nominal_rate') && cfg.force_nominal_rate
+        Reff = cfg.R;  % Nominal rate (ignores tail overhead)
+    else
+        Reff = B / cfg.E;  % Effective rate (accounts for tail)
+    end
 
     for si = 1:length(cfg.EbN0_dB)
         EbN0 = cfg.EbN0_dB(si);
